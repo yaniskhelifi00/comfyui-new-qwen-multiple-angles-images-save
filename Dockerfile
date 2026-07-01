@@ -1,104 +1,65 @@
-# Use the full image (includes runpod-comfyui helper and default handler structure)
-FROM runpod/worker-comfyui:5.8.4
+# Use the base image that actually exists
+FROM runpod/worker-comfyui:5.8.4-base
 
-# Build-time token for gated downloads (not needed for public models, but keep for flexibility)
 ARG HF_TOKEN=""
 
 # ============================================
-# 1. Install custom nodes
+# 1. Install required Python packages (runpod-comfyui, etc.)
 # ============================================
 
-# QwenMultiangle custom node (fixed to your workflow's commit)
+RUN pip install --no-cache-dir runpod-comfyui transformers accelerate sentencepiece protobuf
+
+# ============================================
+# 2. Install custom nodes
+# ============================================
+
 RUN git clone https://github.com/jtydhr88/ComfyUI-qwenmultiangle /comfyui/custom_nodes/ComfyUI-qwenmultiangle && \
     cd /comfyui/custom_nodes/ComfyUI-qwenmultiangle && \
-    (git checkout a6539524a96d21bea6fe0fc01d9b792d2cb1844b 2>/dev/null || \
-     git fetch origin a6539524a96d21bea6fe0fc01d9b792d2cb1844b --depth=1 && \
-     git checkout a6539524a96d21bea6fe0fc01d9b792d2cb1844b || \
-     echo "WARN: commit unreachable, using default branch")
+    (git checkout a6539524a96d21bea6fe0fc01d9b792d2cb1844b 2>/dev/null || true) && \
+    pip install --no-cache-dir -r requirements.txt 2>/dev/null || echo "No requirements"
 
-# ComfyUI-Studio-nodes (provides HuggingFaceDownloader – you removed it, but harmless to keep)
-RUN git clone https://github.com/comfyuistudio/ComfyUI-Studio-nodes /comfyui/custom_nodes/ComfyUI-Studio-nodes
+RUN git clone https://github.com/comfyuistudio/ComfyUI-Studio-nodes /comfyui/custom_nodes/ComfyUI-Studio-nodes && \
+    pip install --no-cache-dir -r /comfyui/custom_nodes/ComfyUI-Studio-nodes/requirements.txt 2>/dev/null || echo "No requirements"
 
-# ComfyUI-easy-use (provides the "easy showAnything" node)
-RUN git clone https://github.com/rocketing/ComfyUI-easy-use /comfyui/custom_nodes/ComfyUI-easy-use
+RUN git clone https://github.com/rocketing/ComfyUI-easy-use /comfyui/custom_nodes/ComfyUI-easy-use && \
+    pip install --no-cache-dir -r /comfyui/custom_nodes/ComfyUI-easy-use/requirements.txt 2>/dev/null || echo "No requirements"
 
 # ============================================
-# 2. Download all required models
+# 3. Download models (using wget – more reliable)
 # ============================================
 
-# Diffusion model (BF16 – used as base)
-RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do \
-    HF_TOKEN=$HF_TOKEN comfy model download \
-    --url 'https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_bf16.safetensors' \
-    --relative-path models/diffusion_models \
-    --filename 'qwen_image_edit_2511_bf16.safetensors' && break; \
-    if [ $i -eq 5 ]; then echo "model-download failed after 5 attempts" >&2; exit 1; fi; \
-    SLEEP=$(echo $BACKOFFS | cut -d ' ' -f $i) && echo "attempt $i failed, retrying in $SLEEP" >&2; sleep $SLEEP; \
-done
+WORKDIR /comfyui/models
 
-# Diffusion model (FP8 – used in your workflow)
-RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do \
-    HF_TOKEN=$HF_TOKEN comfy model download \
-    --url 'https://huggingface.co/xms991/Qwen-Image-Edit-2511-fp8-e4m3fn/resolve/main/qwen_image_edit_2511_fp8_e4m3fn.safetensors' \
-    --relative-path models/diffusion_models \
-    --filename 'Qwen-Image-Edit-2511-FP8_e4m3fn.safetensors' && break; \
-    if [ $i -eq 5 ]; then echo "model-download failed after 5 attempts" >&2; exit 1; fi; \
-    SLEEP=$(echo $BACKOFFS | cut -d ' ' -f $i) && echo "attempt $i failed, retrying in $SLEEP" >&2; sleep $SLEEP; \
-done
+RUN mkdir -p diffusion_models text_encoders vae loras
 
-# Text encoder (CLIP)
-RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do \
-    HF_TOKEN=$HF_TOKEN comfy model download \
-    --url 'https://huggingface.co/Comfy-Org/HunyuanVideo_1.5_repackaged/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors' \
-    --relative-path models/text_encoders \
-    --filename 'qwen_2.5_vl_7b_fp8_scaled.safetensors' && break; \
-    if [ $i -eq 5 ]; then echo "model-download failed after 5 attempts" >&2; exit 1; fi; \
-    SLEEP=$(echo $BACKOFFS | cut -d ' ' -f $i) && echo "attempt $i failed, retrying in $SLEEP" >&2; sleep $SLEEP; \
-done
+RUN wget --progress=dot:giga -O diffusion_models/Qwen-Image-Edit-2511-FP8_e4m3fn.safetensors \
+    "https://huggingface.co/xms991/Qwen-Image-Edit-2511-fp8-e4m3fn/resolve/main/qwen_image_edit_2511_fp8_e4m3fn.safetensors" || \
+    wget --progress=dot:giga -O diffusion_models/Qwen-Image-Edit-2511-FP8_e4m3fn.safetensors \
+    "https://huggingface.co/1038lab/Qwen-Image-Edit-2511-FP8/resolve/main/Qwen-Image-Edit-2511-FP8_e4m3fn.safetensors"
 
-# VAE
-RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do \
-    HF_TOKEN=$HF_TOKEN comfy model download \
-    --url 'https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors' \
-    --relative-path models/vae \
-    --filename 'qwen_image_vae.safetensors' && break; \
-    if [ $i -eq 5 ]; then echo "model-download failed after 5 attempts" >&2; exit 1; fi; \
-    SLEEP=$(echo $BACKOFFS | cut -d ' ' -f $i) && echo "attempt $i failed, retrying in $SLEEP" >&2; sleep $SLEEP; \
-done
+RUN wget --progress=dot:giga -O text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors \
+    "https://huggingface.co/Comfy-Org/HunyuanVideo_1.5_repackaged/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
 
-# LoRA 1 – Lightning (speed optimization)
-RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do \
-    HF_TOKEN=$HF_TOKEN comfy model download \
-    --url 'https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors' \
-    --relative-path models/loras \
-    --filename 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors' && break; \
-    if [ $i -eq 5 ]; then echo "model-download failed after 5 attempts" >&2; exit 1; fi; \
-    SLEEP=$(echo $BACKOFFS | cut -d ' ' -f $i) && echo "attempt $i failed, retrying in $SLEEP" >&2; sleep $SLEEP; \
-done
+RUN wget --progress=dot:giga -O vae/qwen_image_vae.safetensors \
+    "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors"
 
-# LoRA 2 – Multiple Angles (core for your workflow)
-RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do \
-    HF_TOKEN=$HF_TOKEN comfy model download \
-    --url 'https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA/resolve/main/qwen-image-edit-2511-multiple-angles-lora.safetensors' \
-    --relative-path models/loras \
-    --filename 'qwen-image-edit-2511-multiple-angles-lora.safetensors' && break; \
-    if [ $i -eq 5 ]; then echo "model-download failed after 5 attempts" >&2; exit 1; fi; \
-    SLEEP=$(echo $BACKOFFS | cut -d ' ' -f $i) && echo "attempt $i failed, retrying in $SLEEP" >&2; sleep $SLEEP; \
-done
+RUN wget --progress=dot:giga -O loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
+    "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+
+RUN wget --progress=dot:giga -O loras/qwen-image-edit-2511-multiple-angles-lora.safetensors \
+    "https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA/resolve/main/qwen-image-edit-2511-multiple-angles-lora.safetensors"
+
+WORKDIR /
 
 # ============================================
-# 3. Copy your workflow and handler
+# 4. Copy workflow and handler
 # ============================================
 
-# Copy the API workflow JSON into the ComfyUI directory
 COPY workflow_api.json /comfyui/workflow_api.json
-
-# Copy your custom handler script
 COPY src/handler.py /src/handler.py
 
 # ============================================
-# 4. Override the default CMD
+# 5. Override entrypoint to run our handler
 # ============================================
 
-# Explicitly run your handler – this bypasses any auto-discovery issues
-CMD ["python", "-u", "/src/handler.py"]
+ENTRYPOINT ["python", "-u", "/src/handler.py"]
