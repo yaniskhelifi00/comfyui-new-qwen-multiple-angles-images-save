@@ -3,6 +3,7 @@ import json
 import base64
 import os
 import time
+import subprocess
 import requests
 from io import BytesIO
 from PIL import Image
@@ -11,14 +12,34 @@ COMFY_HOST = "127.0.0.1"
 COMFY_PORT = 8188
 BASE_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
 
+comfy_process = None
+
+def start_comfyui():
+    """Start ComfyUI as a background subprocess."""
+    global comfy_process
+    comfy_path = "/comfyui/main.py"
+    if not os.path.exists(comfy_path):
+        print(f"❌ ComfyUI main.py not found at {comfy_path}")
+        return
+    
+    print("🚀 Starting ComfyUI server...")
+    comfy_process = subprocess.Popen(
+        ["python", comfy_path, "--listen", COMFY_HOST, "--port", str(COMFY_PORT)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    print(f"✅ ComfyUI process started (PID: {comfy_process.pid})")
+
 def wait_for_comfyui():
     """Wait until ComfyUI is responsive."""
     print("⏳ Waiting for ComfyUI server...")
+    start_time = time.time()
     while True:
         try:
-            resp = requests.get(f"{BASE_URL}/", timeout=5)
+            resp = requests.get(f"{BASE_URL}/", timeout=2)
             if resp.status_code == 200:
-                print("✅ ComfyUI is ready.")
+                elapsed = time.time() - start_time
+                print(f"✅ ComfyUI is ready (took {elapsed:.1f}s).")
                 break
         except:
             pass
@@ -57,10 +78,6 @@ def fetch_output_images(prompt_id, timeout=300):
                             print(f"📸 Captured output image: {filename}")
             if images:
                 return images
-            else:
-                # Prompt finished but no images found – might be an error.
-                print("⚠️ Prompt finished but no images found.")
-                return []
         time.sleep(1)
     raise TimeoutError(f"⏰ Prompt {prompt_id} timed out after {timeout}s.")
 
@@ -69,7 +86,6 @@ def handler(job):
     # 1. Load the workflow from the JSON file
     workflow_path = "/comfyui/workflow_api.json"
     if not os.path.exists(workflow_path):
-        # fallback for local testing
         workflow_path = "workflow_api.json"
     
     with open(workflow_path, "r") as f:
@@ -94,8 +110,6 @@ def handler(job):
             if node.get("class_type") == "LoadImage":
                 node["inputs"]["image"] = name
                 print(f"🔄 Updated node {node_id} to load '{name}'")
-    else:
-        print("ℹ️ No input image provided – using existing placeholder.")
 
     # 3. Queue the prompt and wait for the result
     prompt_id = queue_prompt(workflow)
@@ -106,6 +120,8 @@ def handler(job):
     return {"images": images}
 
 if __name__ == "__main__":
+    # Start ComfyUI first
+    start_comfyui()
     wait_for_comfyui()
     print("🚀 Starting RunPod handler...")
     runpod.serverless.start({"handler": handler})
