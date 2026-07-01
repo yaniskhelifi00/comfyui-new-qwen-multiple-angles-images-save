@@ -21,3 +21,18 @@ RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do HF_TOKEN=$HF_TOKEN comfy
 
 # user-provided inputs override the auto-generated placeholders above.
 RUN wget --progress=dot:giga -O '/comfyui/input/yy5k-QrbR9apS2sRLtaxsmDnBQPBD2pSR7FL-SjuwFQ.png' "https://cool-anteater-319.convex.cloud/api/storage/2118c4fe-bfbc-4a92-8d0c-bd74f91e72fa"
+# ============================================
+# Install RunPod serverless dependencies
+# ============================================
+RUN pip install --no-cache-dir runpod runpod-comfyui
+
+# ============================================
+# Copy your workflow and handler
+# ============================================
+COPY workflow_api.json /comfyui/workflow_api.json
+COPY src/handler.py /src/handler.py
+
+# ============================================
+# Override entrypoint to run your handler
+# ============================================
+ENTRYPOINT ["python", "-u", "/src/handler.py"]
