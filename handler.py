@@ -10,7 +10,7 @@ comfy = None
 
 def initialize():
     global comfy
-    print("⏳ Waiting for ComfyUI...")
+    print("⏳ Waiting for ComfyUI server...")
     comfy = ComfyUI("127.0.0.1", 8188)
     comfy.wait_for_server()
     print("✅ ComfyUI ready.")
@@ -20,36 +20,55 @@ def handler(job):
     if comfy is None:
         initialize()
 
-    # Load workflow
-    with open("/comfyui/workflow_api.json", "r") as f:
+    # Load your workflow (copied during Docker build)
+    workflow_path = "/comfyui/workflow_api.json"
+    
+    # Fallback for local testing
+    if not os.path.exists(workflow_path):
+        workflow_path = "workflow_api.json"
+    
+    with open(workflow_path, "r") as f:
         workflow = json.load(f)
 
-    # Handle input image
+    # 1. Process input images
     images_input = job["input"].get("images", [])
     if images_input:
-        img_data = images_input[0]
-        name = img_data.get("name", "input.png")
-        raw = img_data["image"]
-        if "," in raw:
-            raw = raw.split(",")[-1]
-        img_bytes = base64.b64decode(raw)
-        img = Image.open(BytesIO(img_bytes))
-        save_path = f"/comfyui/input/{name}"
-        img.save(save_path)
+        for img_data in images_input:
+            name = img_data.get("name", "input.png")
+            raw = img_data["image"]
+            if "," in raw:
+                raw = raw.split(",")[-1]
+            img_bytes = base64.b64decode(raw)
+            img = Image.open(BytesIO(img_bytes))
+            save_path = f"/comfyui/input/{name}"
+            img.save(save_path)
+            print(f"📥 Saved image to {save_path}")
 
-        # Update all LoadImage nodes
-        for node in workflow.values():
-            if node.get("class_type") == "LoadImage":
-                node["inputs"]["image"] = name
+            # Update ALL LoadImage nodes to use this filename
+            for node_id, node in workflow.items():
+                if node.get("class_type") == "LoadImage":
+                    node["inputs"]["image"] = name
+                    print(f"🔄 Updated node {node_id} to load '{name}'")
+    else:
+        print("⚠️ No images provided, using existing placeholder image.")
 
-    # Queue prompt
+    # 2. Queue the prompt
+    print("🚀 Queuing prompt...")
     prompt_id = comfy.queue_prompt(workflow)
+    print(f"📋 Prompt ID: {prompt_id}")
+    
     outputs = comfy.get_result(prompt_id)
+    print("✅ Generation finished.")
 
-    # Extract images
-    result_images = [img["data"] for img in outputs.get("images", [])]
+    # 3. Extract all images from SaveImage nodes (your 6 angles)
+    result_images = []
+    for img_item in outputs.get("images", []):
+        result_images.append(img_item["data"])
+
+    print(f"🖼️ Returning {len(result_images)} images.")
     return {"images": result_images}
 
 if __name__ == "__main__":
     initialize()
+    print("🚀 Starting RunPod serverless handler...")
     runpod.serverless.start({"handler": handler})
